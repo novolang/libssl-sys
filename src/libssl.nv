@@ -1,0 +1,364 @@
+// The C entry points of OpenSSL libssl, one novo-lang declaration each.
+//
+// A pointer is an `Int`: the C API hands out opaque handles for the
+// protocol method, the context, the connection, the cipher and the
+// peer's certificate, and this module carries each of them as the
+// address the C library returned.  Zero is the null pointer, which is
+// how every allocating entry point below reports failure.
+//
+// A `Str` argument is passed as a NUL-terminated C string.  Where a C
+// argument is a `const char *` that is normally NULL, it is declared
+// as an `Int` instead, so 0 spells the null pointer.
+//
+// A `const char *` return value is an address the library owns.  Read
+// it with `ptr.read_str` and do not free it.
+//
+// OpenSSL spells many of its calls as macros over `SSL_ctrl` and
+// `SSL_CTX_ctrl`, and a macro is not a symbol a binding can resolve.
+// Both control entry points are declared below, and the README's
+// "The rules a user needs" section gives the command numbers.
+
+// Initialise the libssl half of OpenSSL.
+//
+// `opts` is a bit set of initialisation options and `settings` is the
+// address of an `OPENSSL_INIT_SETTINGS`, or 0 for the defaults.
+// Answers 1 on success.  OpenSSL 1.1.0 and later initialise themselves
+// on first use, so a program only calls this to change the defaults.
+pub @ffi(library = "ssl", symbol = "OPENSSL_init_ssl")
+fn openssl_init_ssl(opts: Int, settings: Int) -> Int [io, ffi]
+
+// Get the protocol method that negotiates the highest version both
+// sides support, as either a client or a server.
+//
+// The answer is the address of a static structure the library owns.
+// It is the argument to `SSL_CTX_new`.
+pub @ffi(library = "ssl", symbol = "TLS_method")
+fn tls_method() -> Int [ffi]
+
+// Get the protocol method for a client.
+//
+// Like `TLS_method`, with the side fixed to the one that connects.
+pub @ffi(library = "ssl", symbol = "TLS_client_method")
+fn tls_client_method() -> Int [ffi]
+
+// Get the protocol method for a server.
+//
+// Like `TLS_method`, with the side fixed to the one that accepts.
+pub @ffi(library = "ssl", symbol = "TLS_server_method")
+fn tls_server_method() -> Int [ffi]
+
+// Create a context, the object that holds the settings shared by every
+// connection made from it.
+//
+// `method` is an address one of the method entry points answered.
+// Answers 0 when the allocation failed.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_new")
+fn ssl_ctx_new(method: Int) -> Int [ffi]
+
+// Release a context.
+//
+// The context is reference counted, and a connection made from it
+// holds a reference, so the memory is freed when the last connection
+// is freed too.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_free")
+fn ssl_ctx_free(ctx: Int) [ffi]
+
+// Send a control command to a context.
+//
+// This is the entry point behind most of the `SSL_CTX_set_*` macros.
+// `cmd` is the command number, `larg` its integer argument and `parg`
+// the address of its pointer argument.  Command 123,
+// `SSL_CTRL_SET_MIN_PROTO_VERSION`, takes the protocol version in
+// `larg`: 771 is TLS 1.2 and 772 is TLS 1.3.  Command 124 is the
+// maximum.  Answers 1 on success for those two.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_ctrl")
+fn ssl_ctx_ctrl(ctx: Int, cmd: Int, larg: Int, parg: Int) -> Int [ffi]
+
+// Set whether a connection made from this context verifies its peer.
+//
+// `mode` is 0, `SSL_VERIFY_NONE`, or a bit set beginning with 1,
+// `SSL_VERIFY_PEER`.  A client with mode 0 completes a handshake with
+// any certificate and reports the result through
+// `SSL_get_verify_result` instead of failing.  `callback` is the
+// address of a C function called once per certificate in the chain, or
+// 0 for the built-in one.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_set_verify")
+fn ssl_ctx_set_verify(ctx: Int, mode: Int, callback: Int) [ffi]
+
+// Set how many intermediate certificates a chain may have.
+//
+// A chain longer than `depth` fails verification with error 22,
+// `X509_V_ERR_CERT_CHAIN_TOO_LONG`.  The count excludes the peer's own
+// certificate and the trust anchor.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_set_verify_depth")
+fn ssl_ctx_set_verify_depth(ctx: Int, depth: Int) [ffi]
+
+// Set the certificate a connection made from this context presents.
+//
+// `file` is a path and `file_type` is 1 for PEM or 2 for DER.  Answers
+// 1 on success.  A PEM file holding a chain loads only its first
+// certificate through this entry point.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_use_certificate_file")
+fn ssl_ctx_use_certificate_file(ctx: Int, file: Str, file_type: Int) -> Int [io, ffi]
+
+// Set the private key that matches the context's certificate.
+//
+// `file` is a path and `file_type` is 1 for PEM or 2 for DER.  Answers
+// 1 on success.  An encrypted key file needs a passphrase callback,
+// which this package does not carry, so the key must be unencrypted.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_use_PrivateKey_file")
+fn ssl_ctx_use_private_key_file(ctx: Int, file: Str, file_type: Int) -> Int [io, ffi]
+
+// Check that the context's private key matches its certificate.
+//
+// Answers 1 when they match.  Answers 0 when they do not and when
+// either of them has not been set.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_check_private_key")
+fn ssl_ctx_check_private_key(ctx: Int) -> Int [ffi]
+
+// Load the certificates a peer is verified against from a file.
+//
+// `ca_file` is a path to a PEM file holding one or more certificates.
+// `ca_path` is the address of a directory name whose files are hashed
+// by subject name, or 0 to use the file alone.  Answers 1 on success.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_load_verify_locations")
+fn ssl_ctx_load_verify_locations(ctx: Int, ca_file: Str, ca_path: Int) -> Int [io, ffi]
+
+// Load the certificates a peer is verified against from the system
+// store.
+//
+// The store is the one OpenSSL was built to look in, which the
+// `SSL_CERT_FILE` and `SSL_CERT_DIR` environment variables override.
+// Answers 1 on success.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_set_default_verify_paths")
+fn ssl_ctx_set_default_verify_paths(ctx: Int) -> Int [io, ffi]
+
+// Set which cipher suites a connection made from this context offers,
+// for TLS 1.2 and below.
+//
+// `list` is OpenSSL's cipher list syntax, such as `"HIGH:!aNULL"`.
+// Answers 1 when at least one cipher suite was selected.  The TLS 1.3
+// suites are configured separately and are not affected.
+pub @ffi(library = "ssl", symbol = "SSL_CTX_set_cipher_list")
+fn ssl_ctx_set_cipher_list(ctx: Int, list: Str) -> Int [ffi]
+
+// Create a connection from a context.
+//
+// The connection inherits the context's settings as they stand at this
+// moment; a later change to the context does not reach it.  Answers 0
+// when the allocation failed.
+pub @ffi(library = "ssl", symbol = "SSL_new")
+fn ssl_new(ctx: Int) -> Int [ffi]
+
+// Release a connection.
+//
+// This does not close the underlying socket and does not send a close
+// notify alert.  `SSL_shutdown` sends the alert.
+pub @ffi(library = "ssl", symbol = "SSL_free")
+fn ssl_free(ssl: Int) [ffi]
+
+// Send a control command to a connection.
+//
+// This is the entry point behind most of the `SSL_set_*` macros.
+// Command 55, `SSL_CTRL_SET_TLSEXT_HOSTNAME`, sets the server name
+// indication: `larg` is 0, `TLSEXT_NAMETYPE_host_name`, and `parg` is
+// the address of a NUL-terminated host name.  Answers 1 on success.
+pub @ffi(library = "ssl", symbol = "SSL_ctrl")
+fn ssl_ctrl(ssl: Int, cmd: Int, larg: Int, parg: Int) -> Int [ffi]
+
+// Attach a connection to an open file descriptor.
+//
+// The descriptor is usually a connected socket.  Answers 1 on success.
+// libssl does not take ownership of the descriptor and does not close
+// it.
+pub @ffi(library = "ssl", symbol = "SSL_set_fd")
+fn ssl_set_fd(ssl: Int, fd: Int) -> Int [ffi]
+
+// Get the file descriptor a connection is attached to.
+//
+// Answers -1 when no descriptor has been set.
+pub @ffi(library = "ssl", symbol = "SSL_get_fd")
+fn ssl_get_fd(ssl: Int) -> Int [ffi]
+
+// Set the expected host name for certificate verification.
+//
+// The handshake fails unless the peer's certificate names this host.
+// This is a separate decision from the server name indication, which
+// says which host is being asked for.  Answers 1 on success.
+pub @ffi(library = "ssl", symbol = "SSL_set1_host")
+fn ssl_set1_host(ssl: Int, hostname: Str) -> Int [ffi]
+
+// Put a connection into client mode.
+//
+// A connection made from `TLS_client_method` is already in client
+// mode; this is for one made from `TLS_method`.
+pub @ffi(library = "ssl", symbol = "SSL_set_connect_state")
+fn ssl_set_connect_state(ssl: Int) [ffi]
+
+// Put a connection into server mode.
+//
+// A connection made from `TLS_server_method` is already in server
+// mode; this is for one made from `TLS_method`.
+pub @ffi(library = "ssl", symbol = "SSL_set_accept_state")
+fn ssl_set_accept_state(ssl: Int) [ffi]
+
+// Perform the handshake as a client.
+//
+// Answers 1 when the handshake finished.  Answers 0 when the protocol
+// was shut down cleanly but not successfully, and a negative number on
+// a failure or when a non-blocking socket needs more work.
+// `SSL_get_error` says which.
+pub @ffi(library = "ssl", symbol = "SSL_connect")
+fn ssl_connect(ssl: Int) -> Int [io, ffi]
+
+// Perform the handshake as a server.
+//
+// The answers are those of `SSL_connect`.
+pub @ffi(library = "ssl", symbol = "SSL_accept")
+fn ssl_accept(ssl: Int) -> Int [io, ffi]
+
+// Continue the handshake in whichever mode the connection is in.
+//
+// The answers are those of `SSL_connect`.  This is the entry point a
+// non-blocking caller returns to after the socket is ready again.
+pub @ffi(library = "ssl", symbol = "SSL_do_handshake")
+fn ssl_do_handshake(ssl: Int) -> Int [io, ffi]
+
+// Ask whether the handshake has finished.
+//
+// Answers 1 when it has.  A connection that has not started answers 0,
+// and so does one that is part-way through.
+pub @ffi(library = "ssl", symbol = "SSL_is_init_finished")
+fn ssl_is_init_finished(ssl: Int) -> Int [ffi]
+
+// Ask whether the handshake resumed an earlier session.
+//
+// Answers 1 when it did.  A resumed session skips the certificate
+// exchange, so the peer's certificate comes from the earlier
+// handshake.
+pub @ffi(library = "ssl", symbol = "SSL_session_reused")
+fn ssl_session_reused(ssl: Int) -> Int [ffi]
+
+// Read up to `num` decrypted bytes into the buffer at `buf`.
+//
+// Answers the number of bytes read, which is at least 1 on success.
+// Answers 0 or a negative number otherwise, and `SSL_get_error` says
+// whether that is a clean shutdown, a retry or a failure.  A single
+// call never returns bytes from more than one TLS record.
+pub @ffi(library = "ssl", symbol = "SSL_read")
+fn ssl_read(ssl: Int, buf: Int, num: Int) -> Int [io, ffi]
+
+// Read up to `num` decrypted bytes, reporting the count separately.
+//
+// The number of bytes read is written to the slot at `readbytes`, and
+// the answer is 1 on success and 0 on failure.  This is the form that
+// distinguishes a zero-length read from a failure, which `SSL_read`
+// cannot.
+pub @ffi(library = "ssl", symbol = "SSL_read_ex")
+fn ssl_read_ex(ssl: Int, buf: Int, num: Int, readbytes: Int) -> Int [io, ffi]
+
+// Write `num` bytes from the buffer at `buf`, encrypted.
+//
+// Answers the number of bytes written, which is `num` on success with
+// the default settings.  Answers 0 or a negative number otherwise, and
+// `SSL_get_error` says which.
+pub @ffi(library = "ssl", symbol = "SSL_write")
+fn ssl_write(ssl: Int, buf: Int, num: Int) -> Int [io, ffi]
+
+// Write `num` bytes, reporting the count separately.
+//
+// The number of bytes written is written to the slot at `written`, and
+// the answer is 1 on success and 0 on failure.
+pub @ffi(library = "ssl", symbol = "SSL_write_ex")
+fn ssl_write_ex(ssl: Int, buf: Int, num: Int, written: Int) -> Int [io, ffi]
+
+// Get the number of decrypted bytes already buffered for reading.
+//
+// These are bytes `SSL_read` can answer with no call to the socket.
+// The count is what is left of the last record processed, so a 0 does
+// not mean the peer sent nothing.
+pub @ffi(library = "ssl", symbol = "SSL_pending")
+fn ssl_pending(ssl: Int) -> Int [ffi]
+
+// Ask whether any data is buffered, processed or not.
+//
+// Answers 1 when bytes have arrived that `SSL_pending` has not counted
+// because their record is not complete.  A caller that waits on a
+// socket checks this before waiting, or it waits for data it already
+// has.
+pub @ffi(library = "ssl", symbol = "SSL_has_pending")
+fn ssl_has_pending(ssl: Int) -> Int [ffi]
+
+// Shut the connection down.
+//
+// Answers 1 when both sides have sent a close notify alert.  Answers 0
+// when this side's alert was sent and the peer's has not arrived, in
+// which case a second call waits for it.  Answers a negative number on
+// a failure.
+pub @ffi(library = "ssl", symbol = "SSL_shutdown")
+fn ssl_shutdown(ssl: Int) -> Int [io, ffi]
+
+// Get which close notify alerts have passed.
+//
+// The answer is a bit set: 1, `SSL_SENT_SHUTDOWN`, and 2,
+// `SSL_RECEIVED_SHUTDOWN`.
+pub @ffi(library = "ssl", symbol = "SSL_get_shutdown")
+fn ssl_get_shutdown(ssl: Int) -> Int [ffi]
+
+// Turn the result of a connection call into a reason.
+//
+// `ret` is the value that call answered, and it must be the most
+// recent one on this connection.  The answer is 0 for success, 1 for a
+// protocol failure, 5 for a system call failure and 6 for a peer that
+// closed the connection cleanly.  A 2 or a 3, `SSL_ERROR_WANT_READ`
+// and `SSL_ERROR_WANT_WRITE`, means a non-blocking socket must be
+// waited on and the same call repeated with the same arguments.
+pub @ffi(library = "ssl", symbol = "SSL_get_error")
+fn ssl_get_error(ssl: Int, ret: Int) -> Int [ffi]
+
+// Get the protocol version in use, as text.
+//
+// The answer is the address of a static string such as `"TLSv1.3"`.
+// Before the handshake it names the highest version the connection is
+// willing to negotiate.
+pub @ffi(library = "ssl", symbol = "SSL_get_version")
+fn ssl_get_version(ssl: Int) -> Int [ffi]
+
+// Get the cipher suite in use.
+//
+// The answer is the address of a structure the connection owns, or 0
+// before the handshake has chosen one.
+pub @ffi(library = "ssl", symbol = "SSL_get_current_cipher")
+fn ssl_get_current_cipher(ssl: Int) -> Int [ffi]
+
+// Get the name of a cipher suite.
+//
+// `cipher` is an address `SSL_get_current_cipher` answered.  The answer
+// is the address of a static string such as `"TLS_AES_256_GCM_SHA384"`,
+// and it is `"(NONE)"` for the null address.
+pub @ffi(library = "ssl", symbol = "SSL_CIPHER_get_name")
+fn ssl_cipher_get_name(cipher: Int) -> Int [ffi]
+
+// Get the result of verifying the peer's certificate chain.
+//
+// The answer is 0, `X509_V_OK`, when the chain verified.  It is also 0
+// when the peer sent no certificate, so a caller checks
+// `SSL_get1_peer_certificate` as well.
+pub @ffi(library = "ssl", symbol = "SSL_get_verify_result")
+fn ssl_get_verify_result(ssl: Int) -> Int [ffi]
+
+// Get the peer's certificate, with a reference taken.
+//
+// Answers 0 when the peer sent none.  The caller owns the reference and
+// releases it with `X509_free`, which is in libcrypto and not in this
+// package.
+pub @ffi(library = "ssl", symbol = "SSL_get1_peer_certificate")
+fn ssl_get1_peer_certificate(ssl: Int) -> Int [ffi]
+
+// Get the server name the client asked for.
+//
+// `name_type` is 0, `TLSEXT_NAMETYPE_host_name`.  The answer is the
+// address of a string the connection owns, or 0 when the client sent
+// no server name indication.
+pub @ffi(library = "ssl", symbol = "SSL_get_servername")
+fn ssl_get_servername(ssl: Int, name_type: Int) -> Int [ffi]

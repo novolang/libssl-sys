@@ -1,0 +1,167 @@
+// API tests for the OpenSSL libssl bindings.
+//
+// Every test below calls into the C library, so the suite needs libssl
+// installed and linked.  `novo pkg build` type-checks the declarations
+// without it; `novo test` runs them and does not.
+//
+// No test opens a socket.  A connection with no file descriptor
+// attached is enough to exercise the handshake, transfer and shutdown
+// entry points: each of them answers a failure the reference
+// specifies, and `SSL_get_error` names it.
+
+use std.test
+use libssl
+
+// `SSL_FILETYPE_PEM`.
+const PEM: Int = 1
+
+// `SSL_VERIFY_PEER`.
+const VERIFY_PEER: Int = 1
+
+// `SSL_CTRL_SET_MIN_PROTO_VERSION`, and `TLS1_2_VERSION` beside it.
+const CTRL_SET_MIN_PROTO: Int = 123
+const TLS1_2: Int = 771
+
+@test
+fn test_the_library_initialises_and_answers_its_methods() [io, ffi]
+    test.case("OPENSSL_init_ssl, TLS_method, TLS_client_method, TLS_server_method")
+    test.assert(libssl.openssl_init_ssl(0, 0) == 1)
+    test.assert(libssl.tls_method() != 0)
+    test.assert(libssl.tls_client_method() != 0)
+    test.assert(libssl.tls_server_method() != 0)
+
+@test
+fn test_a_context_is_created_and_configured() [io, ffi]
+    test.case("SSL_CTX_new, the control command, the cipher list, SSL_CTX_free")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
+    test.assert(ctx != 0)
+    // Command 123 takes the version in its integer argument.
+    test.assert(libssl.ssl_ctx_ctrl(ctx, CTRL_SET_MIN_PROTO, TLS1_2, 0) == 1)
+    test.assert(libssl.ssl_ctx_set_cipher_list(ctx, "HIGH:!aNULL") == 1)
+    test.assert(libssl.ssl_ctx_set_cipher_list(ctx, "NOSUCHCIPHER") == 0)
+    libssl.ssl_ctx_set_verify(ctx, VERIFY_PEER, 0)
+    libssl.ssl_ctx_set_verify_depth(ctx, 4)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_the_trust_store_loads_and_a_missing_file_is_refused() [io, ffi]
+    test.case("SSL_CTX_set_default_verify_paths, SSL_CTX_load_verify_locations")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
+    test.assert(libssl.ssl_ctx_set_default_verify_paths(ctx) == 1)
+    // 0 for the directory argument selects the file-only form, and the
+    // file does not exist.
+    test.assert(libssl.ssl_ctx_load_verify_locations(ctx, "/nonexistent/ca.pem", 0) == 0)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_a_certificate_and_key_that_are_not_there_are_refused() [io, ffi]
+    test.case("SSL_CTX_use_certificate_file, SSL_CTX_use_PrivateKey_file")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_server_method())
+    test.assert(libssl.ssl_ctx_use_certificate_file(ctx, "/nonexistent/c.pem", PEM) != 1)
+    test.assert(libssl.ssl_ctx_use_private_key_file(ctx, "/nonexistent/k.pem", PEM) != 1)
+    // Neither was set, so there is nothing for the two to match.
+    test.assert(libssl.ssl_ctx_check_private_key(ctx) == 0)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_a_connection_carries_a_descriptor_and_a_host_name() [io, ffi]
+    test.case("SSL_new, SSL_set_fd, SSL_get_fd, SSL_set1_host, SSL_free")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_method())
+    let ssl = libssl.ssl_new(ctx)
+    test.assert(ssl != 0)
+    // A connection with no descriptor answers -1 for it.  The answer
+    // is a C `int`, so it is converted before it is compared.
+    test.assert(libssl.ssl_get_fd(ssl) as i32 == -1)
+    // Descriptor 0 is standard input.  libssl wraps it and does not
+    // close it, and this connection never reads or writes.
+    test.assert(libssl.ssl_set_fd(ssl, 0) == 1)
+    test.assert(libssl.ssl_get_fd(ssl) as i32 == 0)
+    test.assert(libssl.ssl_set1_host(ssl, "example.com") == 1)
+    libssl.ssl_set_connect_state(ssl)
+    libssl.ssl_set_accept_state(ssl)
+    libssl.ssl_set_connect_state(ssl)
+    libssl.ssl_free(ssl)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_the_server_name_indication_is_set_through_the_control_call() [io, ffi]
+    test.case("SSL_ctrl command 55, then SSL_get_servername")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
+    let ssl = libssl.ssl_new(ctx)
+    // The host name is a C string the caller builds, because the
+    // command takes a pointer argument.
+    let name = ptr.alloc(16)
+    ptr.write_bytes_buf(name, bytes.from_str("example.com\u{0}"))
+    // 55 is SSL_CTRL_SET_TLSEXT_HOSTNAME and 0 is the host-name type.
+    test.assert(libssl.ssl_ctrl(ssl, 55, 0, name) == 1)
+    // A client reads its own indication back through the same call.
+    test.assert(ptr.read_str(libssl.ssl_get_servername(ssl, 0)) == "example.com")
+    ptr.free(name)
+    libssl.ssl_free(ssl)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_a_connection_before_its_handshake_has_no_peer() [io, ffi]
+    test.case("SSL_is_init_finished, SSL_session_reused, the cipher and the peer")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
+    let ssl = libssl.ssl_new(ctx)
+    test.assert(libssl.ssl_is_init_finished(ssl) == 0)
+    test.assert(libssl.ssl_session_reused(ssl) == 0)
+    test.assert(libssl.ssl_get_current_cipher(ssl) == 0)
+    // The null cipher has a name of its own in the reference.
+    test.assert(ptr.read_str(libssl.ssl_cipher_get_name(0)) == "(NONE)")
+    test.assert(libssl.ssl_get1_peer_certificate(ssl) == 0)
+    // X509_V_OK, because nothing has been verified.
+    test.assert(libssl.ssl_get_verify_result(ssl) == 0)
+    test.assert(str.len(ptr.read_str(libssl.ssl_get_version(ssl))) > 0)
+    libssl.ssl_free(ssl)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_nothing_is_buffered_on_a_connection_that_never_read() [io, ffi]
+    test.case("SSL_pending, SSL_has_pending, SSL_get_shutdown")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
+    let ssl = libssl.ssl_new(ctx)
+    test.assert(libssl.ssl_pending(ssl) == 0)
+    test.assert(libssl.ssl_has_pending(ssl) == 0)
+    // No close notify has been sent or received.
+    test.assert(libssl.ssl_get_shutdown(ssl) == 0)
+    libssl.ssl_free(ssl)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_a_handshake_with_no_descriptor_fails_and_names_its_reason() [io, ffi]
+    test.case("SSL_connect, SSL_accept, SSL_do_handshake, SSL_get_error")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
+    let ssl = libssl.ssl_new(ctx)
+    let rc = libssl.ssl_connect(ssl) as i32
+    test.assert(rc <= 0)
+    // 5 is SSL_ERROR_SYSCALL, which is what a connection with no
+    // transport under it reports.
+    test.assert(libssl.ssl_get_error(ssl, rc) == 5)
+    test.assert(libssl.ssl_do_handshake(ssl) as i32 <= 0)
+    libssl.ssl_free(ssl)
+    let server = libssl.ssl_new(ctx)
+    libssl.ssl_set_accept_state(server)
+    test.assert(libssl.ssl_accept(server) as i32 <= 0)
+    libssl.ssl_free(server)
+    libssl.ssl_ctx_free(ctx)
+
+@test
+fn test_reading_and_writing_with_no_descriptor_fail() [io, ffi]
+    test.case("SSL_read, SSL_read_ex, SSL_write, SSL_write_ex, SSL_shutdown")
+    let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
+    let ssl = libssl.ssl_new(ctx)
+    let buf = ptr.alloc(64)
+    let count = ptr.alloc_word()
+    test.assert(libssl.ssl_read(ssl, buf, 64) as i32 <= 0)
+    test.assert(libssl.ssl_read_ex(ssl, buf, 64, count) == 0)
+    test.assert(ptr.read_word(count) == 0)
+    test.assert(libssl.ssl_write(ssl, buf, 4) as i32 <= 0)
+    test.assert(libssl.ssl_write_ex(ssl, buf, 4, count) == 0)
+    // A shutdown on a connection that never handshook does not answer 1.
+    test.assert(libssl.ssl_shutdown(ssl) as i32 != 1)
+    ptr.free(count)
+    ptr.free(buf)
+    libssl.ssl_free(ssl)
+    libssl.ssl_ctx_free(ctx)
