@@ -3,18 +3,17 @@
 Transport Layer Security (TLS) is the protocol that encrypts and
 authenticates a network connection. OpenSSL implements it in two C
 libraries: libcrypto holds the cryptographic primitives, and libssl
-holds the protocol built on them. The library's interface is documented
-in [the OpenSSL manual](https://docs.openssl.org/3.0/man3/). This
+holds the protocol built on them. The library's C API is documented in
+[the OpenSSL manual](https://docs.openssl.org/3.0/man3/). This
 package declares forty-three of libssl's entry points to novo-lang, one
 declaration each.
 
-**Status: a binding, not a port.** Every function in this package is a
-declaration of a function in libssl. The package contains no logic of
-its own, and it does nothing without the C library installed. The
-forty-three entry points are the ones a program needs to configure a
-context, run a handshake over a socket it already has, transfer bytes
-and close down; the section "What is not included" says what a program
-still cannot do with them alone.
+Every function here is a declaration of a function in libssl. The
+package contains no logic of its own, and it does nothing without the C
+library installed. The forty-three entry points are the ones a program
+needs to configure a context, run a handshake over a socket it already
+has, transfer bytes and close down. The section "What is not included"
+says what a program cannot do with them alone.
 
 ## What it is
 
@@ -30,9 +29,10 @@ side that connects, `TLS_server_method` the side that accepts, and
 `TLS_method` either.
 
 A **connection** is one TLS conversation. `SSL_new` creates one from a
-context, and it takes a copy of the context's settings as they stand at
-that moment. A later change to the context does not reach a connection
-already created from it.
+context, and it copies most of the context's settings as they stand at
+that moment. A later change to those settings does not reach a
+connection already created. The trust store is shared rather than
+copied.
 
 libssl does not open sockets. A program connects a socket itself and
 hands the file descriptor to `SSL_set_fd`. libssl reads and writes
@@ -46,7 +46,7 @@ connection.
 
 **Verification** is the check that the peer's certificate is signed by
 a certificate the program already trusts, and that it names the host
-the program meant to reach. The two are separate:
+the program meant to reach. The two are separate.
 `SSL_CTX_set_default_verify_paths` loads the trusted certificates, and
 `SSL_set1_host` names the host. A client that loads the first and skips
 the second accepts a valid certificate for any host.
@@ -84,7 +84,7 @@ A client handshake over a socket the program already opened:
 use libssl
 
 fn main(fd: Int) [io, ffi]
-    // The context holds the settings; the connection is made from it.
+    // The context holds the settings, and the connection is made from it.
     let ctx = libssl.ssl_ctx_new(libssl.tls_client_method())
     // 1 is SSL_VERIFY_PEER, and 0 selects the built-in check.
     libssl.ssl_ctx_set_verify(ctx, 1, 0)
@@ -116,9 +116,10 @@ fn main(fd: Int) [io, ffi]
     libssl.ssl_ctx_free(ctx)
 ```
 
-The example is fenced as an illustration rather than a compiled block
-because it needs a connected socket, which this repository does not
-open.
+The fence reads `novo ignore`, so `novo doc` lists the example and does
+not compile it. The example needs a connected socket, which this
+repository does not open. The examples in the declarations' comments
+are fenced the same way.
 
 ## What the package contains
 
@@ -140,7 +141,7 @@ The six groups and their sizes:
 ## How to choose an entry point
 
 `SSL_read` and `SSL_write` answer a count, and a zero from them is
-ambiguous: it may be a clean close or a failure. `SSL_read_ex` and
+ambiguous. It may be a clean close or a failure. `SSL_read_ex` and
 `SSL_write_ex` answer 1 or 0 and write the count into a slot, which
 separates the two. Use the `_ex` pair in new code.
 
@@ -168,7 +169,7 @@ names, which is for a private certificate authority.
 5. **A negative answer is not always a failure.** On a non-blocking
    socket, `SSL_get_error` answering 2, `SSL_ERROR_WANT_READ`, or 3,
    `SSL_ERROR_WANT_WRITE`, means wait for the socket and repeat the
-   *same call with the same arguments*. Changing the arguments between
+   same call with the same arguments. Changing the arguments between
    attempts is undefined.
 6. **Verifying the certificate and checking the host name are two
    decisions.** `SSL_CTX_set_verify` with mode 1 makes the handshake
@@ -189,11 +190,11 @@ names, which is for a private certificate authority.
    | `SSL_CTRL_SET_MIN_PROTO_VERSION` | 123 | 771 for TLS 1.2, 772 for TLS 1.3 | 0 |
    | `SSL_CTRL_SET_MAX_PROTO_VERSION` | 124 | as above | 0 |
 
-9. **A connection copies the context when it is created.** Configure
-   the context fully before calling `SSL_new`.
+9. **A connection copies most of the context when it is created.**
+   Configure the context fully before calling `SSL_new`.
 10. **`SSL_shutdown` takes two calls.** The first sends this side's
-    close notify and answers 0. The second waits for the peer's and
-    answers 1. A program that does not need the peer's may stop after
+    close notify and answers 0, or 1 when the peer's has already
+    arrived. The second waits for the peer's and answers 1. A program that does not need the peer's may stop after
     the first.
 11. **The private key file must be unencrypted.** Decrypting one needs
     a passphrase callback, which is a C function pointer and is not in
@@ -213,41 +214,49 @@ names, which is for a private certificate authority.
   accessors are in libcrypto, and one `sys` package wraps one library.
   `SSL_get1_peer_certificate` answers an address, and `X509_free` from
   libcrypto-sys releases it.
-- **The BIO abstraction.** `BIO_new`, `SSL_set_bio` and their
-  neighbours let libssl read and write through something other than a
-  file descriptor, including a pair of memory buffers. They are in
-  libcrypto.
+- **The BIO functions.** A BIO is OpenSSL's abstraction for a source
+  or sink of bytes, and it lets libssl read and write through something
+  other than a file descriptor, including a pair of memory buffers.
+  `BIO_new` and its neighbours are in libcrypto, and libcrypto-sys does
+  not declare them. `SSL_set_bio`, which is in libssl, is left out
+  because a program has no BIO to pass it.
 - **DTLS.** `DTLS_method` and its neighbours are the datagram form of
-  the protocol. They are left out of the first release.
+  the protocol. They are left out of this release.
 - **Session resumption.** `SSL_get1_session`, `SSL_set_session` and the
   session cache let a second connection skip most of the handshake.
-  They are left out of the first release; `SSL_session_reused` is here
-  so a caller can see when resumption happened.
+  They are left out of this release. `SSL_session_reused` is here, so a
+  caller can see when resumption happened.
 - **The error queue.** `ERR_get_error` and `ERR_error_string_n` turn a
-  failure into text, and they are in libcrypto. `SSL_get_error` is
-  here, and it answers a reason rather than a message.
+  failure into text, and they are in libcrypto. libcrypto-sys declares
+  them. `SSL_get_error` is here, and it answers a reason rather than a
+  message.
 - **The deprecated protocol methods.** `SSLv23_method`, `TLSv1_method`
   and their neighbours are superseded by `TLS_method` with version
   bounds.
 
 ## Related packages
 
-`tls-nv` is the TLS implementation written in novo-lang, and the
-standard library's TLS stands on this C library today. `tls-nv` is
-planned and not published yet.
+[tls-nv](https://novo-lang.org/packages/tls-nv) is a TLS 1.3
+implementation written in novo-lang, with no C library. It is published
+as an interface release. Every function in it is declared and none has
+a body yet, so a program that needs TLS today uses this package or the
+standard library's TLS, which runs on OpenSSL.
 
-`libcrypto-sys` binds the other half of OpenSSL: message digests,
-ciphers, HMAC and random bytes. A program that needs a certificate's
-fields, the error queue or a BIO takes that package as well.
+[libcrypto-sys](https://novo-lang.org/packages/libcrypto-sys) binds the
+other half of OpenSSL, which covers message digests, ciphers, HMAC,
+random bytes and the error queue. It also declares `X509_free`, which
+releases the certificate `SSL_get1_peer_certificate` answers. It
+declares no certificate accessors and no BIO functions.
 
-Choose `tls-nv` when the program must build for a microcontroller or
-for WebAssembly, or when a C toolchain is not wanted. Choose this
-package when the program needs OpenSSL's own behaviour, its
-configuration files or its trust store.
+When its functions have bodies, `tls-nv` is the choice for a program
+that does without a C toolchain. It builds for a host, as this package
+does. This package is the choice for a program that needs OpenSSL's own
+behaviour, its configuration files or its trust store.
 
 ## Tests
 
-`tests/libssl_tests.nv` holds ten tests written against the signatures.
+`tests/libssl_tests.nv` holds ten tests over the forty-three entry
+points.
 They call the C library, so `novo test` needs libssl installed and
 linkable:
 
@@ -259,28 +268,14 @@ novo test tests/libssl_tests.nv
 installed.
 
 No test opens a socket. The suite asserts what the reference specifies
-for a connection with no transport under it: that a context is created
-and configured, that a cipher list naming no real cipher is refused,
-that a missing certificate file is refused, that a connection before its
-handshake has no cipher and no peer, and that `SSL_connect` on a
-connection with no file descriptor fails with `SSL_ERROR_SYSCALL`. The
+for a connection with no transport under it. A context is created and
+configured. A cipher list naming no real cipher is refused, and so is a
+missing certificate file. A connection before its handshake has no
+cipher and no peer. `SSL_connect` on a connection with no file
+descriptor fails with `SSL_ERROR_SYSCALL`. The
 server name indication is set through `SSL_ctrl` and read back through
 `SSL_get_servername`, which exercises the pointer argument of the
 control call.
-
-## Implementation status
-
-| Group | State |
-| --- | --- |
-| Library and methods | Complete for TLS. DTLS is absent. |
-| Context | Complete for the file-based certificate, key and trust store. |
-| Connection | Complete for a file descriptor transport. |
-| Handshake | Complete. |
-| Transfer and shutdown | Complete. |
-| Result | Complete except the session accessors. |
-| Callbacks | Absent. Every one takes a C function pointer. |
-| BIO | Absent. It is in libcrypto. |
-| Session resumption | Absent. Left out of the first release. |
 
 ## Licence
 

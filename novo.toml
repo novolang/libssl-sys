@@ -1,13 +1,12 @@
 [package]
 name        = "libssl-sys"
-version     = "0.1.0"
+version     = "0.1.1"
 description = "Bindings over OpenSSL libssl, the TLS protocol library: the protocol methods, the context, the connection, the handshake, reading and writing, the shutdown and the peer's identity, one declaration per C entry point."
 license     = "Apache-2.0"
 
-# NOT a `0.0.x` draft.  An interface release is the shape whose every
-# `pub fn` body is a `todo()`, and every `pub fn` here is an `@ffi`
-# declaration with no body at all — `novo pkg publish` reads that as a
-# release with bodies and refuses a `0.0.x` version for it.
+# `experimental` because no program outside this repository has used
+# the package yet, and the tests exercise the entry points rather than
+# a consumer's use of them.
 stability   = "experimental"
 
 # `sys`: the layer for a package that binds one C library and decides
@@ -38,7 +37,7 @@ novo        = ">= 0.8.9"
 # `src/` carries.  `libssl-dev` installs
 # `/usr/lib/<arch>/pkgconfig/libssl.pc`, so pkg-config answers `-lssl`
 # on Debian and Ubuntu.  libssl depends on libcrypto and pkg-config
-# adds it; a caller that also declares libcrypto-sys links one copy of
+# adds it.  A caller that also declares libcrypto-sys links one copy of
 # each.
 [ffi.ssl]
 pkg_config = "libssl"
